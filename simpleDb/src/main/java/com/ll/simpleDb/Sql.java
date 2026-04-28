@@ -1,5 +1,7 @@
 package com.ll.simpleDb;
 
+import com.ll.Article;
+
 import java.sql.*;
 import java.time.LocalDateTime;
 import java.util.*;
@@ -100,6 +102,59 @@ public class Sql {
         }
     }
 
+    public <T> List<T> selectRows(Class<T> Article) {
+        String sql = getSql();
+        printSql(sql);
+
+        List<T> list = new ArrayList<>();
+
+        try (
+                Connection conn = simpleDb.getConnection();
+                PreparedStatement stmt = conn.prepareStatement(sql)
+        ) {
+            bindParams(stmt);
+
+            try (ResultSet rs = stmt.executeQuery()) {
+                while (rs.next()) {
+                    try {
+                        Long id = rs.getLong("id");
+                        String title = rs.getString("title");
+                        String body = rs.getString("body");
+                        LocalDateTime createdDate = rs.getTimestamp("createdDate").toLocalDateTime();
+                        LocalDateTime modifiedDate = rs.getTimestamp("modifiedDate").toLocalDateTime();
+                        boolean isBlind = rs.getBoolean("isBlind");
+
+                        T obj = Article
+                                .getConstructor(
+                                        Long.class,
+                                        String.class,
+                                        String.class,
+                                        LocalDateTime.class,
+                                        LocalDateTime.class,
+                                        boolean.class
+                                )
+                                .newInstance(
+                                        id,
+                                        title,
+                                        body,
+                                        createdDate,
+                                        modifiedDate,
+                                        isBlind
+                                );
+
+                        list.add(obj);
+                    } catch (Exception e) {
+                        throw new RuntimeException("객체 변환 실패", e);
+                    }
+                }
+
+                return list;
+            }
+        } catch (SQLException e) {
+            throw new RuntimeException("SELECT 실패: " + sql, e);
+        }
+    }
+
     public Map<String, Object> selectRow() {
         List<Map<String, Object>> rows = selectRows();
 
@@ -107,7 +162,12 @@ public class Sql {
             return null;
         }
 
-        return rows.get(0);
+        return rows.getFirst();
+    }
+
+    public <T> T selectRow(Class<T> Article) {
+        List<T> rows = selectRows(Article);
+        return rows.isEmpty() ? null : rows.getFirst();
     }
 
     public LocalDateTime selectDatetime() {
@@ -130,6 +190,11 @@ public class Sql {
             case String str -> Long.parseLong(str);
             default -> throw new RuntimeException("Long으로 변환할 수 없습니다: " + value);
         };
+    }
+
+    public List<Long> selectLongs() {
+        List<Map<String, Object>> rows = selectRows();
+        return rows.stream().map(row -> (Long) row.values().iterator().next()).toList();
     }
 
     public String selectString() {
