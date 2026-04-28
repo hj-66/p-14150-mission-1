@@ -193,4 +193,16 @@ public class Sql {
 
         return value.toString();
     }
+
+    public Boolean selectBoolean() {
+        Object value = selectScalar();
+
+        return switch (value) {
+            case Boolean b -> b;
+            case Number number -> number.intValue() != 0;
+            case String s -> Boolean.parseBoolean(s);
+            case null, default -> null;
+        };
+
+    }
 }
