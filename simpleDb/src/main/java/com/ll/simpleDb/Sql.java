@@ -2,10 +2,7 @@ package com.ll.simpleDb;
 
 import java.sql.*;
 import java.time.LocalDateTime;
-import java.util.ArrayList;
-import java.util.Arrays;
-import java.util.List;
-import java.util.Map;
+import java.util.*;
 
 public class Sql {
     private final SimpleDb simpleDb;
@@ -27,7 +24,21 @@ public class Sql {
 
     public Sql append(String sqlPart, Object... params) {
         append(sqlPart);
-        this.params.addAll(Arrays.asList(params));
+        addParams(params);
+        return this;
+    }
+
+    public Sql appendIn(String sqlPart, Object... params) {
+        if (params.length == 0) {
+            throw new IllegalArgumentException("appendIn에는 최소 1개 이상의 값이 필요합니다.");
+        }
+
+        String placeholders = String.join(", ", Collections.nCopies(params.length, "?"));
+        String convertedSqlPart = sqlPart.replace("?", placeholders);
+
+        append(convertedSqlPart);
+        addParams(params);
+
         return this;
     }
 
@@ -35,7 +46,10 @@ public class Sql {
         String sql = getSql();
         printSql(sql);
 
-        try (Connection conn = simpleDb.getConnection(); PreparedStatement stmt = conn.prepareStatement(sql, Statement.RETURN_GENERATED_KEYS)) {
+        try (
+                Connection conn = simpleDb.getConnection();
+                PreparedStatement stmt = conn.prepareStatement(sql, Statement.RETURN_GENERATED_KEYS)
+        ) {
             bindParams(stmt);
             stmt.executeUpdate();
 
@@ -57,7 +71,10 @@ public class Sql {
         String sql = getSql();
         printSql(sql);
 
-        try (Connection conn = simpleDb.getConnection(); PreparedStatement stmt = conn.prepareStatement(sql)) {
+        try (
+                Connection conn = simpleDb.getConnection();
+                PreparedStatement stmt = conn.prepareStatement(sql)
+        ) {
             bindParams(stmt);
             return stmt.executeUpdate();
         } catch (SQLException e) {
@@ -65,16 +82,124 @@ public class Sql {
         }
     }
 
-    private String getSql() {
-        return sqlBuilder.toString();
+    public List<Map<String, Object>> selectRows() {
+        String sql = getSql();
+        printSql(sql);
+
+        try (
+                Connection conn = simpleDb.getConnection();
+                PreparedStatement stmt = conn.prepareStatement(sql)
+        ) {
+            bindParams(stmt);
+
+            try (ResultSet rs = stmt.executeQuery()) {
+                return convertResultSetToRows(rs);
+            }
+        } catch (SQLException e) {
+            throw new RuntimeException("SELECT 실패: " + sql, e);
+        }
     }
 
-    private void printSql(String sql) {
-        if (!simpleDb.isDevMode()) return;
+    public Map<String, Object> selectRow() {
+        List<Map<String, Object>> rows = selectRows();
 
-        System.out.println("== rawSql ==");
-        System.out.println(sql);
-        System.out.println("params = " + params);
+        if (rows.isEmpty()) {
+            return null;
+        }
+
+        return rows.get(0);
+    }
+
+    public LocalDateTime selectDatetime() {
+        Object value = selectScalar();
+
+        return switch (value) {
+            case null -> null;
+            case LocalDateTime localDateTime -> localDateTime;
+            case Timestamp timestamp -> timestamp.toLocalDateTime();
+            default -> throw new RuntimeException("LocalDateTime으로 변환할 수 없습니다: " + value);
+        };
+    }
+
+    public Long selectLong() {
+        Object value = selectScalar();
+
+        return switch (value) {
+            case null -> null;
+            case Number number -> number.longValue();
+            case String str -> Long.parseLong(str);
+            default -> throw new RuntimeException("Long으로 변환할 수 없습니다: " + value);
+        };
+    }
+
+    public String selectString() {
+        Object value = selectScalar();
+
+        if (value == null) {
+            return null;
+        }
+
+        return value.toString();
+    }
+
+    public Boolean selectBoolean() {
+        Object value = selectScalar();
+
+        return switch (value) {
+            case null -> null;
+            case Boolean bool -> bool;
+            case Number number -> number.intValue() != 0;
+            case String str -> Boolean.parseBoolean(str);
+            default -> throw new RuntimeException("Boolean으로 변환할 수 없습니다: " + value);
+        };
+    }
+
+    private List<Map<String, Object>> convertResultSetToRows(ResultSet rs) throws SQLException {
+        List<Map<String, Object>> rows = new ArrayList<>();
+
+        ResultSetMetaData metaData = rs.getMetaData();
+        int columnCount = metaData.getColumnCount();
+
+        while (rs.next()) {
+            rows.add(convertResultSetToRow(rs, metaData, columnCount));
+        }
+
+        return rows;
+    }
+
+    private Map<String, Object> convertResultSetToRow(
+            ResultSet rs,
+            ResultSetMetaData metaData,
+            int columnCount
+    ) throws SQLException {
+        Map<String, Object> row = new LinkedHashMap<>();
+
+        for (int i = 1; i <= columnCount; i++) {
+            String columnName = metaData.getColumnLabel(i);
+            Object value = convertValue(rs.getObject(i));
+
+            row.put(columnName, value);
+        }
+
+        return row;
+    }
+
+    private Object convertValue(Object value) {
+        if (value instanceof Timestamp timestamp) {
+            return timestamp.toLocalDateTime();
+        }
+
+        return value;
+    }
+
+    private Object selectScalar() {
+        Map<String, Object> row = selectRow();
+
+        if (row == null || row.isEmpty()) {
+            return null;
+        }
+
+        return row.values().iterator().next();
     }
 
     private void bindParams(PreparedStatement stmt) throws SQLException {
@@ -93,121 +218,21 @@ public class Sql {
         }
     }
 
-    public List<Map<String, Object>> selectRows() {
-        String sql = sqlBuilder.toString();
-        printSql(sql);
-
-        List<Map<String, Object>> rows = new ArrayList<>();
-
-        try (Connection conn = simpleDb.getConnection(); PreparedStatement stmt = conn.prepareStatement(sql)) {
-            bindParams(stmt);
-
-            try (ResultSet rs = stmt.executeQuery()) {
-                ResultSetMetaData metaData = rs.getMetaData();
-                int columnCount = metaData.getColumnCount();
-
-                while (rs.next()) {
-                    Map<String, Object> row = new java.util.HashMap<>();
-
-                    for (int i = 1; i <= columnCount; i++) {
-                        String columnName = metaData.getColumnLabel(i);
-                        Object value = rs.getObject(i);
-
-                        if (value instanceof Timestamp) {
-                            value = ((Timestamp) value).toLocalDateTime();
-                        }
-
-                        row.put(columnName, value);
-                    }
-
-                    rows.add(row);
-                }
-            }
-
-            return rows;
-
-        } catch (SQLException e) {
-            throw new RuntimeException("SELECT 실패: " + sql, e);
-        }
-    }
-
-    public Map<String, Object> selectRow() {
-        List<Map<String, Object>> rows = selectRows();
-
-        if (rows.isEmpty()) {
-            return null; // 또는 예외 던져도 됨 (취향)
-        }
-
-        return rows.get(0);
-    }
-
-    private Object selectScalar() {
-        Map<String, Object> row = selectRow();
-
-        if (row == null || row.isEmpty()) {
-            return null;
-        }
-
-        return row.values().iterator().next();
-    }
-
-    public LocalDateTime selectDatetime() {
-        Object value = selectScalar();
-
-        return switch (value) {
-            case null -> null;
-            case LocalDateTime localDateTime -> localDateTime;
-            case Timestamp timestamp -> timestamp.toLocalDateTime();
-            default -> throw new RuntimeException("LocalDateTime으로 변환할 수 없습니다: " + value);
-        };
-
-    }
-
-    public Long selectLong() {
-        Object value = selectScalar();
-
-        return switch (value) {
-            case null -> null;
-            case Number number -> number.longValue();
-            case String s -> Long.parseLong(s);
-            default -> throw new RuntimeException("Long으로 변환할 수 없습니다: " + value);
-        };
-
-    }
-
-    public String selectString() {
-        Object value = selectScalar();
-
-        if (value == null) {
-            return null;
-        }
-
-        return value.toString();
-    }
-
-    public Boolean selectBoolean() {
-        Object value = selectScalar();
-
-        return switch (value) {
-            case Boolean b -> b;
-            case Number number -> number.intValue() != 0;
-            case String s -> Boolean.parseBoolean(s);
-            case null, default -> null;
-        };
-
-    }
-
-    public void appendIn(String sqlPart, Object... params) {
-        if (params.length == 0) {
-            throw new IllegalArgumentException("appendIn에는 최소 1개 이상의 값이 필요합니다.");
-        }
-
-        String questionMarks = String.join(", ", java.util.Collections.nCopies(params.length, "?"));
-
-        sqlPart = sqlPart.replace("?", questionMarks);
-
-        append(sqlPart);
+    private void addParams(Object... params) {
         this.params.addAll(Arrays.asList(params));
+    }
 
+    private String getSql() {
+        return sqlBuilder.toString();
+    }
+
+    private void printSql(String sql) {
+        if (!simpleDb.isDevMode()) {
+            return;
+        }
+
+        System.out.println("== rawSql ==");
+        System.out.println(sql);
+        System.out.println("params = " + params);
     }
 }
