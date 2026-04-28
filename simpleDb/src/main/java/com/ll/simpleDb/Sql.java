@@ -1,6 +1,7 @@
 package com.ll.simpleDb;
 
 import java.sql.*;
+import java.time.LocalDateTime;
 import java.util.ArrayList;
 import java.util.Arrays;
 import java.util.List;
@@ -147,5 +148,49 @@ public class Sql {
         }
 
         return rows.get(0);
+    }
+
+    private Object selectScalar() {
+        Map<String, Object> row = selectRow();
+
+        if (row == null || row.isEmpty()) {
+            return null;
+        }
+
+        return row.values().iterator().next();
+    }
+
+    public LocalDateTime selectDatetime() {
+        Object value = selectScalar();
+
+        return switch (value) {
+            case null -> null;
+            case LocalDateTime localDateTime -> localDateTime;
+            case Timestamp timestamp -> timestamp.toLocalDateTime();
+            default -> throw new RuntimeException("LocalDateTime으로 변환할 수 없습니다: " + value);
+        };
+
+    }
+
+    public Long selectLong() {
+        Object value = selectScalar();
+
+        return switch (value) {
+            case null -> null;
+            case Number number -> number.longValue();
+            case String s -> Long.parseLong(s);
+            default -> throw new RuntimeException("Long으로 변환할 수 없습니다: " + value);
+        };
+
+    }
+
+    public String selectString() {
+        Object value = selectScalar();
+
+        if (value == null) {
+            return null;
+        }
+
+        return value.toString();
     }
 }
