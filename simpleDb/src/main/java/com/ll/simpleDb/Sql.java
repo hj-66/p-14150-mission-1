@@ -4,6 +4,7 @@ import java.sql.*;
 import java.util.ArrayList;
 import java.util.Arrays;
 import java.util.List;
+import java.util.Map;
 
 public class Sql {
     private final SimpleDb simpleDb;
@@ -95,5 +96,56 @@ public class Sql {
 
             return 0;
         }
+    }
+
+    public List<Map<String, Object>> selectRows() {
+        String sql = sqlBuilder.toString();
+        printSql(sql);
+
+        List<Map<String, Object>> rows = new ArrayList<>();
+
+        try (
+                Connection conn = simpleDb.getConnection();
+                PreparedStatement stmt = conn.prepareStatement(sql)
+        ) {
+            bindParams(stmt);
+
+            try (ResultSet rs = stmt.executeQuery()) {
+                ResultSetMetaData metaData = rs.getMetaData();
+                int columnCount = metaData.getColumnCount();
+
+                while (rs.next()) {
+                    Map<String, Object> row = new java.util.HashMap<>();
+
+                    for (int i = 1; i <= columnCount; i++) {
+                        String columnName = metaData.getColumnLabel(i);
+                        Object value = rs.getObject(i);
+
+                        if (value instanceof Timestamp) {
+                            value = ((Timestamp) value).toLocalDateTime();
+                        }
+
+                        row.put(columnName, value);
+                    }
+
+                    rows.add(row);
+                }
+            }
+
+            return rows;
+
+        } catch (SQLException e) {
+            throw new RuntimeException("SELECT 실패: " + sql, e);
+        }
+    }
+
+    public Map<String, Object> selectRow() {
+        List<Map<String, Object>> rows = selectRows();
+
+        if (rows.isEmpty()) {
+            return null; // 또는 예외 던져도 됨 (취향)
+        }
+
+        return rows.get(0);
     }
 }
