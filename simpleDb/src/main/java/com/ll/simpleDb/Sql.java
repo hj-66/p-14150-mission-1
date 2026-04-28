@@ -35,10 +35,7 @@ public class Sql {
         String sql = getSql();
         printSql(sql);
 
-        try (
-                Connection conn = simpleDb.getConnection();
-                PreparedStatement stmt = conn.prepareStatement(sql, Statement.RETURN_GENERATED_KEYS)
-        ) {
+        try (Connection conn = simpleDb.getConnection(); PreparedStatement stmt = conn.prepareStatement(sql, Statement.RETURN_GENERATED_KEYS)) {
             bindParams(stmt);
             stmt.executeUpdate();
 
@@ -60,10 +57,7 @@ public class Sql {
         String sql = getSql();
         printSql(sql);
 
-        try (
-                Connection conn = simpleDb.getConnection();
-                PreparedStatement stmt = conn.prepareStatement(sql)
-        ) {
+        try (Connection conn = simpleDb.getConnection(); PreparedStatement stmt = conn.prepareStatement(sql)) {
             bindParams(stmt);
             return stmt.executeUpdate();
         } catch (SQLException e) {
@@ -105,10 +99,7 @@ public class Sql {
 
         List<Map<String, Object>> rows = new ArrayList<>();
 
-        try (
-                Connection conn = simpleDb.getConnection();
-                PreparedStatement stmt = conn.prepareStatement(sql)
-        ) {
+        try (Connection conn = simpleDb.getConnection(); PreparedStatement stmt = conn.prepareStatement(sql)) {
             bindParams(stmt);
 
             try (ResultSet rs = stmt.executeQuery()) {
@@ -203,6 +194,20 @@ public class Sql {
             case String s -> Boolean.parseBoolean(s);
             case null, default -> null;
         };
+
+    }
+
+    public void appendIn(String sqlPart, Object... params) {
+        if (params.length == 0) {
+            throw new IllegalArgumentException("appendIn에는 최소 1개 이상의 값이 필요합니다.");
+        }
+
+        String questionMarks = String.join(", ", java.util.Collections.nCopies(params.length, "?"));
+
+        sqlPart = sqlPart.replace("?", questionMarks);
+
+        append(sqlPart);
+        this.params.addAll(Arrays.asList(params));
 
     }
 }
