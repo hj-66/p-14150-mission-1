@@ -4,8 +4,11 @@ import lombok.Getter;
 import lombok.Setter;
 
 import java.sql.*;
+import java.util.Arrays;
 
 public class SimpleDb {
+    private static final String JDBC_URL_TEMPLATE = "jdbc:mysql://%s:3306/%s?useSSL=false&allowPublicKeyRetrieval=true&serverTimezone=Asia/Seoul";
+
     private final String host;
     private final String username;
     private final String password;
@@ -15,8 +18,7 @@ public class SimpleDb {
     @Setter
     private boolean devMode = false;
 
-    // 현재 트랜잭션에서 사용할 Connection
-    private Connection transactionConnection;
+    private final ThreadLocal<Connection> transactionConnection = new ThreadLocal<>();
 
     public SimpleDb(String host, String username, String password, String dbName) {
         this.host = host;
@@ -26,34 +28,34 @@ public class SimpleDb {
     }
 
     private Connection makeConnection() {
-        String url = "jdbc:mysql://%s:3306/%s?useSSL=false&allowPublicKeyRetrieval=true&serverTimezone=Asia/Seoul"
-                .formatted(host, dbName);
-
         try {
-            return DriverManager.getConnection(url, username, password);
+            return DriverManager.getConnection(buildJdbcUrl(), username, password);
         } catch (SQLException e) {
             throw new RuntimeException("DB 연결 실패", e);
         }
     }
 
+    private String buildJdbcUrl() {
+        return JDBC_URL_TEMPLATE.formatted(host, dbName);
+    }
+
     public Connection getConnection() {
-        try {
-            // 트랜잭션 중이면 기존 트랜잭션 Connection을 반환
-            if (isTransactionActive()) {
-                return transactionConnection;
-            }
+        Connection currentConnection = transactionConnection.get();
 
-            // 트랜잭션 중이 아니면 새 Connection 생성
-            return makeConnection();
-
-        } catch (Exception e) {
-            throw new RuntimeException("DB 연결 상태 확인 실패", e);
+        if (isOpen(currentConnection)) {
+            return currentConnection;
         }
+
+        return makeConnection();
     }
 
     public boolean isTransactionActive() {
+        return isOpen(transactionConnection.get());
+    }
+
+    private boolean isOpen(Connection connection) {
         try {
-            return transactionConnection != null && !transactionConnection.isClosed();
+            return connection != null && !connection.isClosed();
         } catch (SQLException e) {
             throw new RuntimeException("트랜잭션 상태 확인 실패", e);
         }
@@ -65,14 +67,11 @@ public class SimpleDb {
         }
 
         try {
-            transactionConnection = makeConnection();
+            Connection connection = makeConnection();
+            connection.setAutoCommit(false);
+            transactionConnection.set(connection);
 
-            // 자동 커밋 비활성화
-            transactionConnection.setAutoCommit(false);
-
-            if (devMode) {
-                System.out.println("트랜잭션 시작");
-            }
+            printDevMessage("트랜잭션 시작");
 
         } catch (SQLException e) {
             throw new RuntimeException("트랜잭션 시작 실패", e);
@@ -85,12 +84,8 @@ public class SimpleDb {
         }
 
         try {
-            transactionConnection.commit();
-
-            if (devMode) {
-                System.out.println("트랜잭션 커밋");
-            }
-
+            transactionConnection.get().commit();
+            printDevMessage("트랜잭션 커밋");
         } catch (SQLException e) {
             throw new RuntimeException("트랜잭션 커밋 실패", e);
         } finally {
@@ -104,12 +99,8 @@ public class SimpleDb {
         }
 
         try {
-            transactionConnection.rollback();
-
-            if (devMode) {
-                System.out.println("트랜잭션 롤백");
-            }
-
+            transactionConnection.get().rollback();
+            printDevMessage("트랜잭션 롤백");
         } catch (SQLException e) {
             throw new RuntimeException("트랜잭션 롤백 실패", e);
         } finally {
@@ -118,56 +109,42 @@ public class SimpleDb {
     }
 
     private void closeTransactionConnection() {
-        if (transactionConnection == null) return;
+        Connection connection = transactionConnection.get();
+
+        if (connection == null) {
+            return;
+        }
 
         try {
-            transactionConnection.setAutoCommit(true);
-            transactionConnection.close();
+            connection.setAutoCommit(true);
+            connection.close();
         } catch (SQLException e) {
             throw new RuntimeException("트랜잭션 Connection 종료 실패", e);
         } finally {
-            transactionConnection = null;
+            transactionConnection.remove();
         }
     }
 
-
     public void run(String sql, Object... params) {
-        if (devMode) {
-            System.out.println("SQL 실행: " + sql);
-            System.out.println("파라미터: " + java.util.Arrays.toString(params));
-        }
+        printRunSql(sql, params);
 
-        Connection conn = null;
-        PreparedStatement stmt = null;
-
-        boolean transactionActive = isTransactionActive();
+        Connection connection = null;
+        PreparedStatement statement = null;
 
         try {
-            conn = getConnection();
-            stmt = conn.prepareStatement(sql);
+            connection = getConnection();
+            statement = connection.prepareStatement(sql);
 
             for (int i = 0; i < params.length; i++) {
-                stmt.setObject(i + 1, params[i]);
+                statement.setObject(i + 1, params[i]);
             }
 
-            stmt.executeUpdate();
-
+            statement.executeUpdate();
         } catch (SQLException e) {
             throw new RuntimeException("SQL 실행 실패: " + sql, e);
         } finally {
-            try {
-                if (stmt != null) {
-                    stmt.close();
-                }
-
-                // 트랜잭션 중이 아닐 때만 Connection을 닫는다.
-                if (!transactionActive && conn != null) {
-                    conn.close();
-                }
-
-            } catch (SQLException e) {
-                throw new RuntimeException("DB 자원 해제 실패", e);
-            }
+            closeStatement(statement);
+            closeConnectionIfNotInTransaction(connection);
         }
     }
 
@@ -178,6 +155,45 @@ public class SimpleDb {
     public void close() {
         if (isTransactionActive()) {
             rollback();
+        }
+    }
+
+    void closeConnectionIfNotInTransaction(Connection connection) {
+        if (connection == null || connection == transactionConnection.get()) {
+            return;
+        }
+
+        try {
+            connection.close();
+        } catch (SQLException e) {
+            throw new RuntimeException("DB Connection 종료 실패", e);
+        }
+    }
+
+    private void closeStatement(Statement statement) {
+        if (statement == null) {
+            return;
+        }
+
+        try {
+            statement.close();
+        } catch (SQLException e) {
+            throw new RuntimeException("DB Statement 종료 실패", e);
+        }
+    }
+
+    private void printRunSql(String sql, Object[] params) {
+        if (!devMode) {
+            return;
+        }
+
+        System.out.println("SQL 실행: " + sql);
+        System.out.println("파라미터: " + Arrays.toString(params));
+    }
+
+    private void printDevMessage(String message) {
+        if (devMode) {
+            System.out.println(message);
         }
     }
 }
