@@ -48,14 +48,24 @@ public class Sql {
         String sql = getSql();
         printSql(sql);
 
-        try (
-                Connection conn = simpleDb.getConnection();
-                PreparedStatement stmt = conn.prepareStatement(sql, Statement.RETURN_GENERATED_KEYS)
-        ) {
+        Connection conn = null;
+        PreparedStatement stmt = null;
+        ResultSet rs = null;
+
+        try {
+            conn = simpleDb.getConnection();
+            stmt = conn.prepareStatement(sql, Statement.RETURN_GENERATED_KEYS);
+
             bindParams(stmt);
             stmt.executeUpdate();
 
-            return getGeneratedKey(stmt);
+            rs = stmt.getGeneratedKeys();
+
+            if (rs.next()) {
+                return rs.getLong(1);
+            }
+
+            return -1;
         } catch (SQLException e) {
             throw new RuntimeException("INSERT 실패: " + sql, e);
         }
@@ -158,11 +168,7 @@ public class Sql {
     public Map<String, Object> selectRow() {
         List<Map<String, Object>> rows = selectRows();
 
-        if (rows.isEmpty()) {
-            return null;
-        }
-
-        return rows.getFirst();
+        return rows.isEmpty() ? null : rows.getFirst();
     }
 
     public <T> T selectRow(Class<T> Article) {
@@ -199,12 +205,7 @@ public class Sql {
 
     public String selectString() {
         Object value = selectScalar();
-
-        if (value == null) {
-            return null;
-        }
-
-        return value.toString();
+        return value == null ? null : value.toString();
     }
 
     public Boolean selectBoolean() {
@@ -250,21 +251,12 @@ public class Sql {
     }
 
     private Object convertValue(Object value) {
-        if (value instanceof Timestamp timestamp) {
-            return timestamp.toLocalDateTime();
-        }
-
-        return value;
+        return (value instanceof Timestamp timestamp) ? timestamp.toLocalDateTime() : value;
     }
 
     private Object selectScalar() {
         Map<String, Object> row = selectRow();
-
-        if (row == null || row.isEmpty()) {
-            return null;
-        }
-
-        return row.values().iterator().next();
+        return row == null ? row : row.values().iterator().next();
     }
 
     private void bindParams(PreparedStatement stmt) throws SQLException {
@@ -299,5 +291,25 @@ public class Sql {
         System.out.println("== rawSql ==");
         System.out.println(sql);
         System.out.println("params = " + params);
+    }
+
+    private void closeResources(ResultSet rs, PreparedStatement stmt, Connection conn) {
+        try {
+            if (rs != null) {
+                rs.close();
+            }
+
+            if (stmt != null) {
+                stmt.close();
+            }
+
+            // 트랜잭션 중이 아닐 때만 Connection을 닫는다.
+            if (!simpleDb.isTransactionActive() && conn != null) {
+                conn.close();
+            }
+
+        } catch (SQLException e) {
+            throw new RuntimeException("DB 자원 해제 실패", e);
+        }
     }
 }
